@@ -1,0 +1,3 @@
+powershell commade :
+(Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd 'D:\code\cyberdeck\routine_job_hunt';
+            venv\Scripts\python -m uvicorn backend:app --port 8000 -…)

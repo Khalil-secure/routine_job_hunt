@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+groq
+python-docx
+python-dotenv
+docx2pdf
+gspread
+google-auth

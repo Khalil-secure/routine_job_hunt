@@ -1,0 +1,49 @@
+{
+  "_comment": "Edit this file to adapt the CV generator to a new user. The backend reads it at startup. No restart needed between job applications — only when you edit this file.",
+
+  "identity": {
+    "gender": "homme",
+    "tagline_prefix": "Ingénieur Réseaux & Télécoms"
+  },
+
+  "owned_titles": {
+    "fr": [
+      { "title": "Ingénieur Réseaux & Télécoms",       "triggers": ["réseau", "LAN", "WAN", "switch", "routeur", "firewall", "VLAN", "BGP", "OSPF","télécom", "5G", "LTE", "FTTH", "RF", "antenne", "télécommunications", "fibre"] },
+      { "title": "Chef de Projet Télécom",   "triggers": ["chef de projet télécom", "déploiement télécom", "pilotage télécom", "delivery télécom"] },
+      { "title": "Chef de Projet",           "triggers": ["chef de projet", "gestion de projet", "PMO", "coordination", "delivery", "pilotage", "scrum master"] },
+      { "title": "Administrateur Réseaux",   "triggers": ["admin réseau", "administration réseau", "infra réseau", "switch", "VLAN", "routeur", "firewall"] },
+      { "title": "Administrateur Systèmes",  "triggers": ["admin système", "sysadmin", "Windows Server", "Linux", "Active Directory", "VMware", "Hyper-V", "serveur"] },
+      { "title": "Développeur Python",       "triggers": ["Python", "backend Python", "scripting", "automatisation", "FastAPI", "Flask", "Django"] },
+      { "title": "Développeur Java",         "triggers": ["Java", "JEE", "Spring", "Maven", "microservices Java"] },
+      { "title": "Développeur IA",           "triggers": ["IA", "ML", "machine learning", "LLM", "NLP", "deep learning", "data science", "PyTorch", "TensorFlow"] },
+      { "title": "Développeur",              "triggers": ["développeur", "fullstack", "frontend", "backend", "web", "développement logiciel"] }
+    ],
+    "en": [
+      { "title": "Network Engineer",         "triggers": ["network", "LAN", "WAN", "switch", "router", "firewall", "VLAN", "BGP", "OSPF"] },
+      { "title": "Telecom Engineer",         "triggers": ["telecom", "5G", "LTE", "FTTH", "RF", "antenna", "telecommunications", "fiber"] },
+      { "title": "Telecom Project Manager",  "triggers": ["telecom project", "telecom deployment", "telecom delivery"] },
+      { "title": "Project Manager",          "triggers": ["project manager", "project management", "PMO", "coordination", "delivery", "scrum master"] },
+      { "title": "Network Administrator",    "triggers": ["network admin", "network administration", "switch", "VLAN", "router", "firewall"] },
+      { "title": "Systems Administrator",    "triggers": ["sysadmin", "Windows Server", "Linux", "Active Directory", "VMware", "Hyper-V", "server"] },
+      { "title": "Python Developer",         "triggers": ["Python", "backend", "scripting", "automation", "FastAPI", "Flask", "Django"] },
+      { "title": "Java Developer",           "triggers": ["Java", "JEE", "Spring", "Maven", "microservices"] },
+      { "title": "AI Developer",             "triggers": ["AI", "ML", "machine learning", "LLM", "NLP", "deep learning", "data science", "PyTorch", "TensorFlow"] },
+      { "title": "Developer",                "triggers": ["developer", "fullstack", "frontend", "backend", "web", "software development"] }
+    ]
+  },
+
+  "summary_examples": [
+    {
+      "context": "poste SOC N2 / analyste cybersécurité",
+      "text": "Ingénieur télécom reconverti en cybersécurité défensive, j'ai construit un homelab SOC complet — ELK, Suricata, durcissement CIS/ANSSI — pour comprendre les attaques de l'intérieur. Chez Bouygues Telecom, j'ai industrialisé la supervision de 300 sites. SC-200 en cours."
+    },
+    {
+      "context": "poste Support N2 / administration systèmes",
+      "text": "Formé en réseaux et télécoms, j'ai géré le support N2 et l'administration systèmes chez ETEX sur des environnements Windows/Linux multi-sites. Active Directory, tickets, incidents terrain — j'interviens vite et je documente tout."
+    },
+    {
+      "context": "poste Technicien / Ingénieur Télécom",
+      "text": "Chez Bouygues Telecom, j'ai coordonné 4 projets de déploiement en parallèle sur 300 sites. Avant ça, de la config réseau et de l'administration système côté ETEX. 3CX, VPN IPSEC, switchs — je suis à l'aise aussi bien en rack qu'en ticket."
+    }
+  ]
+}
