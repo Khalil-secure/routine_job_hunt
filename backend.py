@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from groq import Groq
+import groq as _groq_lib
 
 sys.path.insert(0, str(Path(__file__).parent))
 from generate_cv_last_version import build_cv as render_pdf_two_col
@@ -26,6 +27,37 @@ def render_pdf(json_path: str, pdf_path: str, style: str = "two_col"):
         render_pdf_two_col(json_path, pdf_path)
 
 load_dotenv()
+
+# ── Groq model fallback chain ─────────────────────────────────────────────────
+_GROQ_MODELS = [
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "meta-llama/llama-4-maverick-17b-128e-instruct",
+    "llama-3.3-70b-versatile",
+]
+
+def _groq_call(client: Groq, *, messages, max_tokens, temperature,
+               response_format=None):
+    """Try each model in _GROQ_MODELS, switching on RateLimitError."""
+    last_err = None
+    for model in _GROQ_MODELS:
+        try:
+            kwargs = dict(
+                model       = model,
+                messages    = messages,
+                max_tokens  = max_tokens,
+                temperature = temperature,
+            )
+            if response_format:
+                kwargs["response_format"] = response_format
+            response = client.chat.completions.create(**kwargs)
+            if model != _GROQ_MODELS[0]:
+                print(f"[groq-fallback] used {model}")
+            return response
+        except _groq_lib.RateLimitError as e:
+            print(f"[groq-fallback] rate limit on {model}, trying next...")
+            last_err = e
+            continue
+    raise last_err
 
 BASE_DIR     = Path(__file__).parent
 CV_JOBS_DIR  = BASE_DIR / "CV_jobs"
@@ -506,23 +538,25 @@ VALIDATION OBLIGATOIRE avant de répondre :
 
 skills — exactement 10 entrées, format {{"label": "...", "value": "..."}} pour chacune.
 
+PRIORITÉ ABSOLUE : les mots-clés de l'offre passent AVANT les compétences du candidat.
+
 PROCESSUS EN 3 ÉTAPES OBLIGATOIRES :
 
-ÉTAPE A — MOTS-CLÉS OFFRE (max 5) : Les 5 mots-clés techniques les plus cités dans l'offre.
-Règle label : nom propre ou acronyme reconnu ("Python", "CI/CD", "MLOps", "Kubernetes", "ISO 27001"). INTERDIT : mots communs isolés ("Data", "Engineer", "équipe"), verbes, adjectifs seuls, titres de poste.
+ÉTAPE A — MOTS-CLÉS OFFRE (max 8) : Les 8 mots-clés techniques les plus importants de l'offre, dans l'ordre de leur importance dans l'offre (les plus cités / les plus centraux au poste en premier).
+Règle label : nom propre ou acronyme reconnu ("Python", "CI/CD", "Kubernetes", "ISO 27001", "BGP"). INTERDIT : mots communs isolés ("Data", "Engineer", "équipe"), verbes, adjectifs seuls, titres de poste.
+Si le candidat maîtrise le mot-clé → le valeur reflète son niveau réel. Sinon → "notions".
 
-ÉTAPE B — COMPÉTENCES CANDIDAT PERTINENTES (max 3) : Parmi COMPÉTENCES DE BASE, les 3 plus liées au domaine du poste. Ajouter après Étape A.
+ÉTAPE B — COMPÉTENCES CANDIDAT COMPLÉMENTAIRES (max 2) : Parmi COMPÉTENCES DE BASE, les 2 qui ne sont PAS déjà couverts par Étape A et qui sont les plus liées au domaine du poste. Ajouter après Étape A.
 
-ÉTAPE C — COMPLÉTION JUSQU'À 10 (max 2) : 2 outils standards du domaine non encore listés (ex: ML Engineer → Git, MLflow ; SOC → Nmap, Wireshark ; Sysadmin → Bash, Ansible). Valeur = "confirmé".
-
-CLASSEMENT FINAL : Étape A en premier, puis B, puis C. Total = 10 exactement.
+CLASSEMENT FINAL : Étape A en premier (ordre d'importance dans l'offre), puis Étape B. Total = 10 exactement.
 
 RÈGLE DES VALEURS — distribution variée, jamais tout "confirmé" :
 • "expert"        → technologie centrale du poste, citée plusieurs fois, cœur de métier du candidat
 • "avancé"        → technologie importante dans l'offre, maîtrisée en contexte professionnel
 • "confirmé"      → technologie mentionnée dans l'offre, utilisée régulièrement
-• "intermédiaire" → technologie périphérique ou complémentaire (Étape C)
-Distribution attendue sur 10 :  2-3 "avancé", 3-4 "confirmé", 2-3 "intermédiaire".
+• "intermédiaire" → technologie mentionnée dans l'offre, connaissance partielle
+• "notions"       → technologie exigée dans l'offre mais peu ou pas pratiquée par le candidat
+Distribution attendue sur 10 : 1-2 "expert", 2-3 "avancé", 3-4 "confirmé", 1-2 autres.
 
 MOTS-CLÉS ABSENTS DU CV À COUVRIR OBLIGATOIREMENT: {missing_keywords}
 keyword_bullet:
@@ -819,14 +853,16 @@ def _patch_cv_soc(master_cv: dict, soc_base: dict, job_desc: str, client: Groq, 
 
     for attempt in range(3):
         try:
-            response = client.chat.completions.create(
-                model           = "meta-llama/llama-4-scout-17b-16e-instruct",
+            response = _groq_call(
+                client,
                 messages        = [{"role": "user", "content": prompt}],
                 response_format = {"type": "json_object"},
                 max_tokens      = 1600,
                 temperature     = 0.45 + attempt * 0.05,
             )
             break
+        except _groq_lib.RateLimitError:
+            raise
         except Exception as e:
             if attempt == 2:
                 raise
@@ -880,9 +916,6 @@ def _patch_cv_soc(master_cv: dict, soc_base: dict, job_desc: str, client: Groq, 
                 continue
             seen.add(lbl)
             ordered.append({"label": lbl, "value": val[:28]})
-        for s in skills_pool:
-            if s["label"] not in seen and len(ordered) < 10:
-                ordered.append({"label": s["label"], "value": s["value"]})
         cv["skills"] = ordered[:10]
 
     if patch.get("summary"):
@@ -1203,8 +1236,8 @@ async def generate_letter(payload: JobPayload):
     )
 
     client = Groq(api_key=os.getenv("Groq_API_text_analysis"))
-    response = client.chat.completions.create(
-        model           = "meta-llama/llama-4-scout-17b-16e-instruct",
+    response = _groq_call(
+        client,
         messages        = [{"role": "user", "content": prompt}],
         max_tokens      = 1200,
         temperature     = 0.55,
