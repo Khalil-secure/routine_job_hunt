@@ -31,13 +31,20 @@ load_dotenv()
 # ── Groq model fallback chain ─────────────────────────────────────────────────
 _GROQ_MODELS = [
     "meta-llama/llama-4-scout-17b-16e-instruct",
-    "meta-llama/llama-4-maverick-17b-128e-instruct",
     "llama-3.3-70b-versatile",
+    "llama-3.1-70b-versatile",
+    "llama-3.1-8b-instant",
 ]
+
+_RETRY_ERRORS = (
+    _groq_lib.RateLimitError,
+    _groq_lib.NotFoundError,
+    _groq_lib.APIStatusError,
+)
 
 def _groq_call(client: Groq, *, messages, max_tokens, temperature,
                response_format=None):
-    """Try each model in _GROQ_MODELS, switching on RateLimitError."""
+    """Cycle through _GROQ_MODELS on rate-limit or unavailable model errors."""
     last_err = None
     for model in _GROQ_MODELS:
         try:
@@ -53,8 +60,8 @@ def _groq_call(client: Groq, *, messages, max_tokens, temperature,
             if model != _GROQ_MODELS[0]:
                 print(f"[groq-fallback] used {model}")
             return response
-        except _groq_lib.RateLimitError as e:
-            print(f"[groq-fallback] rate limit on {model}, trying next...")
+        except _RETRY_ERRORS as e:
+            print(f"[groq-fallback] {type(e).__name__} on {model}, trying next...")
             last_err = e
             continue
     raise last_err
@@ -861,8 +868,6 @@ def _patch_cv_soc(master_cv: dict, soc_base: dict, job_desc: str, client: Groq, 
                 temperature     = 0.45 + attempt * 0.05,
             )
             break
-        except _groq_lib.RateLimitError:
-            raise
         except Exception as e:
             if attempt == 2:
                 raise
@@ -1017,7 +1022,7 @@ async def generate_cv(payload: JobPayload):
                    ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    client = Groq(api_key=os.getenv("Groq_API_text_analysis"))
+    client = Groq(api_key=os.getenv("groq_api_key") or os.getenv("Groq_API_text_analysis"))
     hint_company = payload.meta.get("company", "") or payload.job.get("company", "")
     cv_out, cv_meta = _patch_cv_soc(master_cv, soc_base, job_desc, client, lang=lang, hint_company=hint_company)
 
@@ -1235,7 +1240,7 @@ async def generate_letter(payload: JobPayload):
         candidate_name   = candidate_name,
     )
 
-    client = Groq(api_key=os.getenv("Groq_API_text_analysis"))
+    client = Groq(api_key=os.getenv("groq_api_key") or os.getenv("Groq_API_text_analysis"))
     response = _groq_call(
         client,
         messages        = [{"role": "user", "content": prompt}],
