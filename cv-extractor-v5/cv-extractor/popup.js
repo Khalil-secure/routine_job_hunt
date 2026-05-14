@@ -4,6 +4,8 @@ let extractedData  = null;
 let selectedOutput = 'cv';       // 'cv' | 'letter' | 'both'
 let selectedLang   = 'fr';       // 'fr' | 'en'
 let selectedStyle  = 'two_col';  // 'two_col' | 'one_col'
+let selectedFormat = 'pdf';      // 'pdf' | 'docx'
+let lastLetterText = '';         // full cover letter text for copy
 
 const API_URL        = 'http://localhost:8000/generate-cv';
 const LETTER_API_URL = 'http://localhost:8000/generate-letter';
@@ -35,6 +37,7 @@ function initOptionGroups() {
       if (group === 'output') selectedOutput = btn.dataset.value;
       if (group === 'lang')   selectedLang   = btn.dataset.value;
       if (group === 'style')  selectedStyle  = btn.dataset.value;
+      if (group === 'format') selectedFormat = btn.dataset.value;
     });
   });
 }
@@ -115,8 +118,9 @@ async function extract() {
 
     extractedData = response.data;
     // Inject user-selected options into meta
-    extractedData.meta.lang  = selectedLang;
-    extractedData.meta.style = selectedStyle;
+    extractedData.meta.lang   = selectedLang;
+    extractedData.meta.style  = selectedStyle;
+    extractedData.meta.format = selectedFormat;
 
     if ((extractedData.job.description || '').length < 150) {
       throw new Error(
@@ -207,11 +211,16 @@ async function generateCV(auto = false) {
     const result = await callAPI(API_URL, extractedData);
     if (!result.success) throw new Error(result.error || 'Server error');
 
+    const isDocx   = selectedFormat === 'docx';
+    const docxName = result.docx_path ? result.docx_path.split(/[\\/]/).pop() : null;
+    const shownFile = isDocx && docxName ? docxName : result.filename;
+    const hint      = isDocx && docxName ? ' (Word — prêt pour Workday)' : '';
+
     status.style.color = 'var(--green)';
-    status.textContent = `✅ ${result.filename}`;
+    status.textContent = `✅ ${shownFile}${hint}`;
     btn.textContent    = '✅ CV Ready!';
     btn.classList.add('success');
-    toast('CV generated!', 3000);
+    toast(isDocx ? 'CV .docx saved!' : 'CV PDF saved!', 3000);
 
     setTimeout(() => {
       btn.textContent = '🧠 Regenerate CV';
@@ -249,6 +258,13 @@ async function generateLetter(auto = false) {
     btn.classList.add('success');
     toast('Cover letter saved!', 3000);
 
+    // Show the letter in the panel for copy-paste
+    if (result.letter) {
+      lastLetterText = result.letter;
+      document.getElementById('letterText').value  = result.letter;
+      document.getElementById('letterPanel').style.display = 'block';
+    }
+
     setTimeout(() => {
       btn.textContent = '✉️ Regenerate Letter';
       btn.classList.remove('success');
@@ -280,7 +296,7 @@ async function generateFromPaste() {
 
   const words = text.trim().split(/\s+/).length;
   extractedData = {
-    meta: { platform: 'manual', source_url: '', lang: selectedLang, style: selectedStyle, company: '' },
+    meta: { platform: 'manual', source_url: '', lang: selectedLang, style: selectedStyle, format: selectedFormat, company: '' },
     job:  { description: text, title: '', company: '', required_skills: [], word_count: words, contract_type: '?' },
     for_ai: { prompt_ready: text },
   };
@@ -289,11 +305,15 @@ async function generateFromPaste() {
     const result = await callAPI(API_URL, extractedData);
     if (!result.success) throw new Error(result.error || 'Server error');
 
+    const isDocx   = selectedFormat === 'docx';
+    const docxName = result.docx_path ? result.docx_path.split(/[\\/]/).pop() : null;
+    const shownFile = isDocx && docxName ? docxName : result.filename;
+
     status.style.color = 'var(--green)';
-    status.textContent = `✅ ${result.filename}`;
+    status.textContent = `✅ ${shownFile}`;
     btn.textContent    = '✅ CV Ready!';
     btn.classList.add('success');
-    toast('CV generated!', 3000);
+    toast(isDocx ? 'CV .docx saved!' : 'CV PDF saved!', 3000);
 
     setTimeout(() => {
       btn.textContent = '🧠 Generate CV';
@@ -314,11 +334,31 @@ document.addEventListener('DOMContentLoaded', () => {
   initOptionGroups();
   document.getElementById('btnExtract').addEventListener('click',        extract);
   document.getElementById('btnRetry').addEventListener('click',          () => showScreen('screenIdle'));
-  document.getElementById('btnReset').addEventListener('click',          () => { extractedData = null; showScreen('screenIdle'); });
+  document.getElementById('btnReset').addEventListener('click',          () => {
+    extractedData = null;
+    lastLetterText = '';
+    document.getElementById('letterPanel').style.display = 'none';
+    document.getElementById('letterText').value = '';
+    showScreen('screenIdle');
+  });
   document.getElementById('btnCopy').addEventListener('click',           copyJSON);
   document.getElementById('btnDownload').addEventListener('click',       downloadJSON);
   document.getElementById('btnGenerateCV').addEventListener('click',     () => generateCV());
   document.getElementById('btnGenerateLetter').addEventListener('click', generateLetter);
   document.getElementById('btnPasteGenerate').addEventListener('click',  generateFromPaste);
   document.getElementById('btnPasteBack').addEventListener('click',      () => showScreen('screenIdle'));
+  document.getElementById('btnCopyLetter').addEventListener('click', async () => {
+    if (!lastLetterText) return;
+    try { await navigator.clipboard.writeText(lastLetterText); }
+    catch {
+      const ta = document.createElement('textarea');
+      ta.value = lastLetterText; document.body.appendChild(ta);
+      ta.select(); document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    const btn = document.getElementById('btnCopyLetter');
+    btn.textContent = '✅ Copied!';
+    toast('Cover letter copied!', 2000);
+    setTimeout(() => { btn.textContent = '📋 Copy cover letter'; }, 2500);
+  });
 });

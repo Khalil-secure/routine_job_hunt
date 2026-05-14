@@ -3,7 +3,8 @@
 
   "identity": {
     "gender": "homme",
-    "tagline_prefix": "Ingénieur Réseaux & Télécoms"
+    "tagline_prefix": "Ingénieur Réseaux & Télécoms",
+    "tagline_prefix_en": "Network & Telecom Engineer"
   },
 
   "owned_titles": {

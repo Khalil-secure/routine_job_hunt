@@ -9,8 +9,8 @@ venv/
 google_credentials.json
 
 # Generated output (keep folder, not content)
-CV_jobs/*.pdf
-lettres/*.pdf
+CV_jobs/
+lettres/
 ats_runs/
 
 # Debug / temp files auto-saved by backend
@@ -29,7 +29,10 @@ cv_master_profile.json
 cv_main.json
 cv_main_en.json
 suivi.json
+user_config.json
 
 # OS
 .DS_Store
 Thumbs.db
+user_config.json
+user_config.json

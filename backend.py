@@ -18,6 +18,7 @@ import groq as _groq_lib
 sys.path.insert(0, str(Path(__file__).parent))
 from generate_cv_last_version import build_cv as render_pdf_two_col
 from generate_cv_one_column   import build_cv as render_pdf_one_col
+from generate_cv_docx         import build_docx
 from sheets import append_application, update_status as sheets_update
 
 def render_pdf(json_path: str, pdf_path: str, style: str = "two_col"):
@@ -32,8 +33,6 @@ load_dotenv()
 _GROQ_MODELS = [
     "meta-llama/llama-4-scout-17b-16e-instruct",
     "llama-3.3-70b-versatile",
-    "llama-3.1-70b-versatile",
-    "llama-3.1-8b-instant",
 ]
 
 _RETRY_ERRORS = (
@@ -42,28 +41,50 @@ _RETRY_ERRORS = (
     _groq_lib.APIStatusError,
 )
 
-def _groq_call(client: Groq, *, messages, max_tokens, temperature,
-               response_format=None):
-    """Cycle through _GROQ_MODELS on rate-limit or unavailable model errors."""
+def _try_key(api_key: str, *, messages, max_tokens, temperature,
+             response_format=None, key_label: str = ""):
+    """Try every model in _GROQ_MODELS with a single API key."""
+    client = Groq(api_key=api_key)
     last_err = None
     for model in _GROQ_MODELS:
         try:
-            kwargs = dict(
-                model       = model,
-                messages    = messages,
-                max_tokens  = max_tokens,
-                temperature = temperature,
-            )
+            kwargs = dict(model=model, messages=messages,
+                          max_tokens=max_tokens, temperature=temperature)
             if response_format:
                 kwargs["response_format"] = response_format
             response = client.chat.completions.create(**kwargs)
-            if model != _GROQ_MODELS[0]:
-                print(f"[groq-fallback] used {model}")
+            print(f"[groq] {key_label} · {model} ✓")
             return response
         except _RETRY_ERRORS as e:
-            print(f"[groq-fallback] {type(e).__name__} on {model}, trying next...")
+            print(f"[groq] {key_label} · {model} → {type(e).__name__}, next model...")
             last_err = e
-            continue
+    raise last_err
+
+def _groq_call(_, *, messages, max_tokens, temperature,
+               response_format=None):
+    """Try key1 across all models; on full exhaustion wait 3 s then try key2."""
+    import time
+    keys = [k for k in [
+        os.getenv("groq_api_key"),
+        os.getenv("groq_api_key_2"),
+        os.getenv("Groq_API_text_analysis"),
+    ] if k]
+    if not keys:
+        keys = [_.api_key]
+
+    last_err = None
+    for i, key in enumerate(keys):
+        label = f"key{i + 1}"
+        if i > 0:
+            print(f"[groq] key{i} exhausted — waiting 3 s then switching to {label}...")
+            time.sleep(3)
+        try:
+            return _try_key(key, messages=messages, max_tokens=max_tokens,
+                            temperature=temperature, response_format=response_format,
+                            key_label=label)
+        except _RETRY_ERRORS as e:
+            print(f"[groq] {label} fully exhausted.")
+            last_err = e
     raise last_err
 
 BASE_DIR     = Path(__file__).parent
@@ -154,6 +175,73 @@ def _build_prompt_blocks() -> dict:
 
 _PROMPT_BLOCKS = _build_prompt_blocks()
 
+# ── Language-specific prompt blocks ───────────────────────────────────────────
+_SKILL_LEVELS_FR = (
+    '• "expert"         → technologie centrale du poste, citée plusieurs fois, cœur de métier du candidat\n'
+    '• "avancé"         → technologie importante dans l\'offre, maîtrisée en contexte professionnel\n'
+    '• "confirmé"       → technologie mentionnée dans l\'offre, utilisée régulièrement\n'
+    '• "intermédiaire"  → technologie mentionnée dans l\'offre, connaissance partielle\n'
+    '• "notions"        → technologie exigée dans l\'offre mais peu ou pas pratiquée par le candidat\n'
+    'Distribution attendue sur 10 : 1-2 "expert", 2-3 "avancé", 3-4 "confirmé", 1-2 autres.'
+)
+_SKILL_LEVELS_EN = (
+    '• "expert"         → core technology of the role, cited multiple times, candidate\'s primary domain\n'
+    '• "advanced"       → important technology in the offer, used in a professional context\n'
+    '• "proficient"     → technology mentioned in the offer, used regularly\n'
+    '• "intermediate"   → technology mentioned in the offer, partial knowledge\n'
+    '• "basic"          → technology required in the offer but rarely or never practised by the candidate\n'
+    'Expected distribution over 10: 1-2 "expert", 2-3 "advanced", 3-4 "proficient", 1-2 others.'
+)
+
+_SUMMARY_TONE_FR = """\
+RÈGLES DE TON :
+• Parler à la première personne implicite (sans "Je suis") — ex: "Ingénieur réseaux de formation,
+  j'ai basculé vers la sécurité défensive après..." ou "Issu d'une formation ingénieur télécom..."
+• Une seule idée forte par phrase — pas de liste déguisée
+• Montrer une trajectoire ou une logique, pas juste une liste de compétences
+• Le dernier mot doit donner envie de lire la suite (accroche vers les expériences)
+
+STRUCTURE SOUPLE (choisir la plus naturelle selon le profil et le poste) :
+Option A — Trajectoire : D'où vient le candidat → ce qu'il fait maintenant → pourquoi ce poste
+Option B — Réalisation forte : Commencer par la chose la plus impressionnante → contexte → projection
+Option C — Problème/Solution : Le besoin du poste → ce que le candidat apporte concrètement
+
+CONTRAINTES TECHNIQUES (non négociables) :
+• Mentionner au moins 2 mots-clés techniques EXACTS de l'offre — intégrés naturellement, pas listés
+• Aucun chiffre d'années inventé (cf. RÈGLE ANTI-MENSONGE)
+• Pas de certification mentionnée sauf si elle est dans le profil ET directement liée au poste
+• Maximum absolu : 80 mots — couper sans hésiter
+
+INTERDIT (formules qui tuent la crédibilité) :
+• "passionné(e) par", "motivé(e)", "dynamique", "rigoureux/rigoureuse"
+• "à la recherche de nouveaux défis", "désireux(se) de rejoindre"
+• "solides compétences en", "bonne maîtrise de", "fort(e) d'une expérience"
+• Toute formule qu'on retrouverait dans 1000 autres CVs"""
+
+_SUMMARY_TONE_EN = """\
+TONE RULES:
+• Write in implicit first person (no "I am") — e.g. "Telecom engineer who shifted into defensive security..." or "Trained in network engineering..."
+• One strong idea per sentence — no disguised bullet lists
+• Show a trajectory or logic, not just a skills list
+• The last sentence should make the reader want to read the experience section
+
+FLEXIBLE STRUCTURE (choose the most natural for the profile and role):
+Option A — Trajectory: where the candidate comes from → what they do now → why this role
+Option B — Strong achievement: start with the most impressive thing → context → projection
+Option C — Problem/Solution: the role's need → what the candidate concretely brings
+
+HARD CONSTRAINTS:
+• Mention at least 2 EXACT technical keywords from the job offer — woven in naturally, not listed
+• No invented years of experience (see ANTI-LIE RULE)
+• No certification mentioned unless it is in the profile AND directly relevant to the role
+• Absolute maximum: 80 words — cut without hesitation
+
+FORBIDDEN (phrases that kill credibility):
+• "passionate about", "motivated", "dynamic", "rigorous"
+• "looking for new challenges", "eager to join"
+• "strong skills in", "good command of", "with X years of experience in"
+• Any phrase that would appear in 1000 other CVs"""
+
 CV_JOBS_DIR.mkdir(exist_ok=True)
 LETTRES_DIR.mkdir(exist_ok=True)
 
@@ -161,7 +249,7 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["POST", "GET"],
+    allow_methods=["POST", "GET", "PATCH"],
     allow_headers=["*"],
 )
 
@@ -454,7 +542,7 @@ JSON de sortie — exactement ces 9 champs:
     "exp_index": 0,
     "bullet": "<nouvelle ligne — mots-clés absents, max 110 chars>",
     "rewrite_index": 0,
-    "rewrite_bullet": "<reformulation ATS de la bullet[rewrite_index] existante — même longueur, plus de mots-clés offre>"
+    "rewrite_bullet": "<reformulation ATS d'une bullet existante — verbes forts, mots-clés offre intégrés, impact mis en avant. Max 150 chars.>"
   }},
   "experience_variants": [
     {{"exp_index": 0, "variant_id": "<deploy|support>"}}
@@ -473,32 +561,9 @@ Règles:
 
 {tagline_rule}
 
-summary : 2-3 phrases, 55-80 mots. Ton : direct, concret, humain — comme si le candidat
-se présentait en 20 secondes à quelqu'un qu'il vient de rencontrer dans un couloir.
+summary : 2-3 phrases, 55-80 words. Tone: direct, concrete, human.
 
-RÈGLES DE TON :
-• Parler à la première personne implicite (sans "Je suis") — ex: "Ingénieur réseaux de formation,
-  j'ai basculé vers la sécurité défensive après..." ou "Issu d'une formation ingénieur télécom..."
-• Une seule idée forte par phrase — pas de liste déguisée
-• Montrer une trajectoire ou une logique, pas juste une liste de compétences
-• Le dernier mot doit donner envie de lire la suite (accroche vers les expériences)
-
-STRUCTURE SOUPLE (choisir la plus naturelle selon le profil et le poste) :
-Option A — Trajectoire : D'où vient le candidat → ce qu'il fait maintenant → pourquoi ce poste
-Option B — Réalisation forte : Commencer par la chose la plus impressionnante → contexte → projection
-Option C — Problème/Solution : Le besoin du poste → ce que le candidat apporte concrètement
-
-CONTRAINTES TECHNIQUES (non négociables) :
-• Mentionner au moins 2 mots-clés techniques EXACTS de l'offre — intégrés naturellement, pas listés
-• Aucun chiffre d'années inventé (cf. RÈGLE ANTI-MENSONGE)
-• Pas de certification mentionnée sauf si elle est dans le profil ET directement liée au poste
-• Maximum absolu : 80 mots — couper sans hésiter
-
-INTERDIT (formules qui tuent la crédibilité) :
-• "passionné(e) par", "motivé(e)", "dynamique", "rigoureux/rigoureuse"
-• "à la recherche de nouveaux défis", "désireux(se) de rejoindre"
-• "solides compétences en", "bonne maîtrise de", "fort(e) d'une expérience"
-• Toute formule qu'on retrouverait dans 1000 autres CVs
+{summary_tone_block}
 
 {summary_examples_block}
 
@@ -551,28 +616,37 @@ PROCESSUS EN 3 ÉTAPES OBLIGATOIRES :
 
 ÉTAPE A — MOTS-CLÉS OFFRE (max 8) : Les 8 mots-clés techniques les plus importants de l'offre, dans l'ordre de leur importance dans l'offre (les plus cités / les plus centraux au poste en premier).
 Règle label : nom propre ou acronyme reconnu ("Python", "CI/CD", "Kubernetes", "ISO 27001", "BGP"). INTERDIT : mots communs isolés ("Data", "Engineer", "équipe"), verbes, adjectifs seuls, titres de poste.
-Si le candidat maîtrise le mot-clé → le valeur reflète son niveau réel. Sinon → "notions".
+Si le candidat maîtrise le mot-clé → le valeur reflète son niveau réel. Sinon → niveau débutant (voir RÈGLE DES VALEURS).
 
 ÉTAPE B — COMPÉTENCES CANDIDAT COMPLÉMENTAIRES (max 2) : Parmi COMPÉTENCES DE BASE, les 2 qui ne sont PAS déjà couverts par Étape A et qui sont les plus liées au domaine du poste. Ajouter après Étape A.
 
 CLASSEMENT FINAL : Étape A en premier (ordre d'importance dans l'offre), puis Étape B. Total = 10 exactement.
 
-RÈGLE DES VALEURS — distribution variée, jamais tout "confirmé" :
-• "expert"        → technologie centrale du poste, citée plusieurs fois, cœur de métier du candidat
-• "avancé"        → technologie importante dans l'offre, maîtrisée en contexte professionnel
-• "confirmé"      → technologie mentionnée dans l'offre, utilisée régulièrement
-• "intermédiaire" → technologie mentionnée dans l'offre, connaissance partielle
-• "notions"       → technologie exigée dans l'offre mais peu ou pas pratiquée par le candidat
-Distribution attendue sur 10 : 1-2 "expert", 2-3 "avancé", 3-4 "confirmé", 1-2 autres.
+RÈGLE DES VALEURS — distribution variée :
+{skill_levels_block}
 
 MOTS-CLÉS ABSENTS DU CV À COUVRIR OBLIGATOIREMENT: {missing_keywords}
-keyword_bullet:
-1. Lire les expériences ci-dessous et choisir la plus proche de l'offre → exp_index (0/1/2).
-2. Lister tous les mots-clés techniques de l'offre (outils, produits, protocoles, technos).
-3. Identifier lesquels sont ABSENTS des bullets existants de l'expérience choisie.
-4. Écrire UNE phrase qui contient le maximum de ces mots-clés ABSENTS — pas ceux déjà présents.
-Format : verbe passé + mots-clés absents enchaînés + contexte minimal. Max 110 caractères.
-Exemple : si les bullets mentionnent déjà Hyper-V et VMware → ne pas les répéter → mettre Active Directory, GPO, DNS/DHCP, Proxmox, Zabbix à la place.
+keyword_bullet — 2 opérations sur la même expérience :
+SÉLECTION (obligatoire) — choisir exp_index selon le domaine principal de l'offre :
+• Offre gestion de projet / coordination / PMO / delivery / pilotage / chef de projet → exp_index 0
+• Offre développement / IA / ML / Python / data science / LLM / fullstack / backend → exp_index 1
+• Offre réseaux / systèmes / sécurité / télécom / admin / infrastructure / SOC / support → exp_index 2
+En cas de doute : compter les mots-clés de l'offre présents dans le titre et les bullets de chaque expérience — choisir celle avec le score le plus élevé. Ne jamais choisir par défaut exp_index 0.
+
+Opération A — bullet (nouvelle ligne) :
+1. Lister tous les mots-clés techniques de l'offre absents des bullets existants de l'expérience choisie.
+2. Écrire UNE phrase avec le maximum de ces mots-clés absents.
+Format : verbe passé + mots-clés + contexte minimal. Max 110 caractères.
+Exemple : si les bullets mentionnent déjà Hyper-V et VMware → ne pas les répéter → mettre Active Directory, GPO, DNS/DHCP à la place.
+
+Opération B — rewrite_bullet (reformulation ATS d'une bullet existante) :
+1. Parmi les bullets de l'expérience choisie, sélectionner celle dont le contenu est le plus proche des exigences de l'offre → rewrite_index.
+2. Reformuler cette bullet pour maximiser le score ATS : intégrer les mots-clés exacts de l'offre, utiliser des verbes d'action forts, mettre en avant l'impact mesurable.
+CONTRAINTES :
+• Rester fidèle aux faits décrits dans la bullet originale — ne pas inventer de contexte, de chiffres ou de résultats absents.
+• Ajouter des mots-clés de l'offre est autorisé si ils précisent naturellement ce qui est déjà décrit (ex: "géré des projets" → "piloté des projets agile/Scrum en coordination multi-équipes").
+• Ne jamais inventer des outils ou produits spécifiques (marques, versions) que la bullet originale ne mentionne pas.
+• Longueur : même ordre de grandeur que l'original ±30 chars. Max 150 caractères.
 
 EXPÉRIENCES DISPONIBLES (dans l'ordre):
 {experiences_json}
@@ -639,6 +713,55 @@ Réponds en JSON avec exactement ces trois champs :
   "company": "Nom exact de l'entreprise recruteuse (extrait de l'offre, sans mention H/F ni intitulé de poste)",
   "role": "Intitulé exact du poste (extrait de l'offre, sans mention H/F)",
   "letter": "Le texte complet de la lettre"
+}}
+"""
+
+LETTER_PROMPT_TEMPLATE_EN = """\
+Write a professional cover letter in English. Sharp, authentic, no hollow phrases.
+
+═══ JOB OFFER ═══
+{job_description}
+
+═══ CANDIDATE PROFILE ═══
+{master_profile}
+
+═══ RULES ═══
+Structure in 4 paragraphs, 320-370 words total:
+
+§1 — HOOK (4-5 lines):
+- Show that you understand the company's challenge/context for THIS specific role
+- One sentence that proves you read the offer (mention a specific mission or technology)
+- DO NOT start with "I am writing to express my interest in..."
+
+§2 — VALUE ADDED (6-8 lines):
+- 2-3 concrete achievements directly tied to the role's responsibilities
+- Numbers where available, otherwise precise qualitative impact
+- Weave in EXACT keywords from the job offer naturally
+- Show logical progression: context → action → result
+
+§3 — PERSONAL INITIATIVE (5-6 lines):
+- Pick ONE personal project from the candidate profile that directly resonates with the role's needs (homelab, tool built, automation, personal deployment...)
+- Show the candidate doesn't just know the tech — they ship: describe what was concretely built, configured, or automated
+- Angle: self-taught person who takes initiative outside of work to go further
+- DO NOT describe an intention or curiosity — describe a concrete result (what runs, what was deployed, what solves a real problem)
+- Tone: direct and factual — "I built / deployed / automated", not "I strive to" or "I seek to"
+
+§4 — FIT + CALL TO ACTION (4-5 lines):
+- What THIS role offers you (growth, challenge, environment) — not generic
+- Direct and confident closing, not obsequious
+- Propose an interview assertively
+
+FORMAT:
+- Start with: "Dear Hiring Manager,"
+- End with: "I look forward to hearing from you and would welcome the opportunity to discuss my application further.\\n\\nBest regards,\\n{candidate_name}"
+- DO NOT invent facts absent from the profile
+- Tone: professional but human — no corporate jargon
+
+Reply in JSON with exactly these three fields:
+{{
+  "company": "Exact name of the recruiting company (extracted from the offer, without H/F mention or job title)",
+  "role": "Exact job title (extracted from the offer, without H/F mention)",
+  "letter": "The complete text of the cover letter"
 }}
 """
 
@@ -836,6 +959,27 @@ def _patch_cv_soc(master_cv: dict, soc_base: dict, job_desc: str, client: Groq, 
     ]
 
     blocks = _PROMPT_BLOCKS
+
+    skill_levels_block   = _SKILL_LEVELS_EN   if lang == "en" else _SKILL_LEVELS_FR
+    summary_tone_block   = _SUMMARY_TONE_EN   if lang == "en" else _SUMMARY_TONE_FR
+
+    # For English CVs: use English tagline rule and skip French summary examples
+    if lang == "en":
+        tl_prefix_en = _cfg("identity.tagline_prefix_en",
+                            _cfg("identity.tagline_prefix", "Engineer"))
+        tagline_rule_block = (
+            f'tagline: short phrase in 2 parts separated by " · ":\n'
+            f'• Part 1: ALWAYS "{tl_prefix_en}" — never modify this part.\n'
+            f'• Part 2: "passionate about [main domain of the offer]" — adapt to the offer '
+            f'(e.g., "cybersecurity", "AI and machine learning", "DevOps and automation")\n'
+            f'→ max 80 characters, natural and professional, never generic.\n'
+            f'Example: "{tl_prefix_en} · passionate about cybersecurity"'
+        )
+        summary_examples_block = ""  # French examples would bias the language
+    else:
+        tagline_rule_block     = blocks["tagline_rule"]
+        summary_examples_block = blocks["summary_examples_block"]
+
     prompt = PATCH_PROMPT_SOC.format(
         job_description         = job_desc,
         projects_json           = json.dumps(candidates, ensure_ascii=False),
@@ -853,9 +997,11 @@ def _patch_cv_soc(master_cv: dict, soc_base: dict, job_desc: str, client: Groq, 
             ensure_ascii=False
         ),
         gender_rule             = blocks["gender_rule"],
-        tagline_rule            = blocks["tagline_rule"],
+        tagline_rule            = tagline_rule_block,
         owned_block             = blocks["owned_block"],
-        summary_examples_block  = blocks["summary_examples_block"],
+        summary_examples_block  = summary_examples_block,
+        skill_levels_block      = skill_levels_block,
+        summary_tone_block      = summary_tone_block,
     )
 
     for attempt in range(3):
@@ -908,7 +1054,7 @@ def _patch_cv_soc(master_cv: dict, soc_base: dict, job_desc: str, client: Groq, 
                 "tech":        p.get("tech", []),
                 "description": p.get("description", ""),
             }
-            for p in patch["projects"][:3]
+            for p in patch["projects"][:4]
         ]
 
     if patch.get("skills"):
@@ -926,9 +1072,17 @@ def _patch_cv_soc(master_cv: dict, soc_base: dict, job_desc: str, client: Groq, 
     if patch.get("summary"):
         summary = patch["summary"].strip()
         exp_years = len(soc_base.get("experience", []))
-        fake_exp = re.search(r'(\d+)\s*ans?\s*d.expérience', summary, re.IGNORECASE)
+        _fake_re = re.compile(
+            r'(\d+)\s*(?:ans?\s*d.expérience|years?\s*of\s*experience)',
+            re.IGNORECASE
+        )
+        fake_exp = _fake_re.search(summary)
         if fake_exp and int(fake_exp.group(1)) > exp_years + 1:
-            summary = re.sub(r'[^.]*\d+\s*ans?\s*d.expérience[^.]*\.?\s*', '', summary, flags=re.IGNORECASE).strip()
+            _strip_re = re.compile(
+                r'[^.]*\d+\s*(?:ans?\s*d.expérience|years?\s*of\s*experience)[^.]*\.?\s*',
+                re.IGNORECASE
+            )
+            summary = _strip_re.sub('', summary).strip()
         if summary:
             cv.setdefault("profile", {})["summary_fr"] = summary
 
@@ -951,7 +1105,7 @@ def _patch_cv_soc(master_cv: dict, soc_base: dict, job_desc: str, client: Groq, 
         chosen = next((v for v in exp["title_variants"] if v["variant_id"] == v_id), None)
         if chosen:
             exp["title"]   = chosen["title"]
-            exp["bullets"] = chosen["bullets"]
+            exp["bullets"] = list(chosen["bullets"])  # copy — avoid mutating variant data
             groq_handled.add(v_idx)
 
     # Python-side fallback: score any variant-capable experience Groq missed or got wrong
@@ -967,7 +1121,7 @@ def _patch_cv_soc(master_cv: dict, soc_base: dict, job_desc: str, client: Groq, 
                 best_variant = v
         if best_variant and best_score > 0:
             exp["title"]   = best_variant["title"]
-            exp["bullets"] = best_variant["bullets"]
+            exp["bullets"] = list(best_variant["bullets"])  # copy — avoid mutating variant data
 
     kb         = patch.get("keyword_bullet", {})
     kb_exp_idx = kb.get("exp_index")
@@ -977,7 +1131,7 @@ def _patch_cv_soc(master_cv: dict, soc_base: dict, job_desc: str, client: Groq, 
 
         if kb.get("rewrite_bullet") and isinstance(kb.get("rewrite_index"), int):
             r_idx = kb["rewrite_index"]
-            if 0 <= r_idx < len(kb_exp.get("bullets", [])):
+            if 0 <= r_idx < len(kb_exp["bullets"]):
                 kb_exp["bullets"][r_idx] = kb["rewrite_bullet"].strip()[:150]
 
         if kb.get("bullet"):
@@ -1008,10 +1162,11 @@ async def generate_cv(payload: JobPayload):
     with open(soc_cv_src, encoding="utf-8") as f:
         soc_base = json.load(f)
 
-    master_cv = master
-    job_desc  = payload.job.get("description", "") or payload.for_ai.get("prompt_ready", "")
-    lang      = payload.meta.get("lang", "fr")   # "en" sent by extension for English CVs
-    cv_style  = payload.meta.get("style", "two_col")  # "one_col" | "two_col"
+    master_cv  = master
+    job_desc   = payload.job.get("description", "") or payload.for_ai.get("prompt_ready", "")
+    lang       = payload.meta.get("lang", "fr")     # "en" sent by extension for English CVs
+    cv_style   = payload.meta.get("style", "two_col")  # "one_col" | "two_col"
+    cv_format  = payload.meta.get("format", "pdf")  # "pdf" | "docx"
 
     if not job_desc:
         raise HTTPException(400, "Description du poste vide")
@@ -1060,9 +1215,17 @@ async def generate_cv(payload: JobPayload):
         with open(tmp_json, "w", encoding="utf-8") as f:
             json.dump(cv_out, f, ensure_ascii=False, indent=2)
 
-        render_pdf(str(tmp_json), pdf_path, style=cv_style)
-        output_file = f"{basename}.pdf"
-        output_path = pdf_path
+        if cv_format == "docx":
+            pdf_path  = None
+            docx_path = str(CV_JOBS_DIR / f"{basename}.docx")
+            build_docx(str(tmp_json), docx_path)
+            output_file = f"{basename}.docx"
+            output_path = docx_path
+        else:
+            render_pdf(str(tmp_json), pdf_path, style=cv_style)
+            output_file = f"{basename}.pdf"
+            output_path = pdf_path
+            docx_path   = None
 
     finally:
         if tmp_json.exists():
@@ -1089,6 +1252,7 @@ async def generate_cv(payload: JobPayload):
         "success":    True,
         "filename":   output_file,
         "path":       output_path,
+        "docx_path":  docx_path,
         "role":       cv_meta.get("target_role", ""),
         "company":    cv_meta.get("target_company", ""),
         "suivi_id":   suivi_entry["id"],
@@ -1097,7 +1261,8 @@ async def generate_cv(payload: JobPayload):
 
 
 def _render_letter_pdf(text: str, out_path: str, candidate_name: str,
-                       identity: dict = None, company: str = "", role: str = ""):
+                       identity: dict = None, company: str = "", role: str = "",
+                       lang: str = "fr"):
     from reportlab.pdfgen import canvas as rl_canvas
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfbase import pdfmetrics
@@ -1121,7 +1286,8 @@ def _render_letter_pdf(text: str, out_path: str, candidate_name: str,
     title_parts = [candidate_name]
     if company:
         title_parts.append(company)
-    c.setTitle(f"Lettre de motivation — {' · '.join(title_parts)}")
+    doc_title = "Cover Letter" if lang == "en" else "Lettre de motivation"
+    c.setTitle(f"{doc_title} — {' · '.join(title_parts)}")
 
     def new_page():
         c.showPage()
@@ -1153,9 +1319,10 @@ def _render_letter_pdf(text: str, out_path: str, candidate_name: str,
 
         # Date (right-aligned)
         today_str = date.today().strftime("%d/%m/%Y")
+        date_label = f"{today_str}" if lang == "en" else f"Paris, le {today_str}"
         c.setFont(body_font, 9.5)
-        date_w = c.stringWidth(f"Paris, le {today_str}", body_font, 9.5)
-        c.drawString(W - margin_x - date_w, y, f"Paris, le {today_str}")
+        date_w = c.stringWidth(date_label, body_font, 9.5)
+        c.drawString(W - margin_x - date_w, y, date_label)
         y -= 24
 
         # Separator line
@@ -1165,20 +1332,29 @@ def _render_letter_pdf(text: str, out_path: str, candidate_name: str,
         y -= 16
         c.setFillColor(black)
 
-        # Objet line
+        # Subject line
         if company or role:
-            objet_parts = []
-            if role:
-                objet_parts.append(role)
-            if company:
-                objet_parts.append(f"chez {company}")
-            objet_value = " ".join(objet_parts)
-            objet_label = "Objet : "
+            if lang == "en":
+                objet_label = "Re: "
+                objet_parts = []
+                if role:
+                    objet_parts.append(f"Application for {role}")
+                if company:
+                    objet_parts.append(f"at {company}")
+                objet_value = " ".join(objet_parts)
+            else:
+                objet_label = "Objet : "
+                objet_parts = []
+                if role:
+                    objet_parts.append(role)
+                if company:
+                    objet_parts.append(f"chez {company}")
+                objet_value = f"Candidature au poste de {' '.join(objet_parts)}"
             lw = c.stringWidth(objet_label, title_font, 10)
             c.setFont(title_font, 10)
             c.drawString(margin_x, y, objet_label)
             c.setFont(body_font, 10)
-            c.drawString(margin_x + lw, y, f"Candidature au poste de {objet_value}")
+            c.drawString(margin_x + lw, y, objet_value)
             y -= 20
 
     for paragraph in text.split("\n"):
@@ -1223,6 +1399,7 @@ async def generate_letter(payload: JobPayload):
 
     cv_root  = master
     job_desc = payload.job.get("description", "") or payload.for_ai.get("prompt_ready", "")
+    lang     = payload.meta.get("lang", "fr")
 
     if not job_desc:
         raise HTTPException(400, "Description du poste vide")
@@ -1234,7 +1411,8 @@ async def generate_letter(payload: JobPayload):
         identity = json.load(f).get("identity", {})
     candidate_name = identity.get("full_name", "Khalil Ghiati")
 
-    prompt = LETTER_PROMPT_TEMPLATE.format(
+    template = LETTER_PROMPT_TEMPLATE_EN if lang == "en" else LETTER_PROMPT_TEMPLATE
+    prompt = template.format(
         job_description  = job_desc,
         master_profile   = json.dumps(filtered, ensure_ascii=False, separators=(",", ":")),
         candidate_name   = candidate_name,
@@ -1257,11 +1435,12 @@ async def generate_letter(payload: JobPayload):
     # Save to lettres/ folder
     today     = date.today().strftime("%Y-%m-%d")
     safe_co   = re.sub(r'[^\w\s-]', '', company_name or job_desc[:40]).strip().replace(" ", "_")[:30]
-    filename  = f"LM_{safe_co}_{today}.pdf"
+    prefix    = "CL" if lang == "en" else "LM"
+    filename  = f"{prefix}_{safe_co}_{today}.pdf"
     out_path  = LETTRES_DIR / filename
 
     _render_letter_pdf(letter_text, str(out_path), candidate_name,
-                       identity=identity, company=company_name, role=role_name)
+                       identity=identity, company=company_name, role=role_name, lang=lang)
 
     return {
         "success":  True,
@@ -1269,5 +1448,6 @@ async def generate_letter(payload: JobPayload):
         "path":     str(out_path),
         "company":  company_name,
         "role":     role_name,
+        "letter":   letter_text,
         "preview":  letter_text[:300] + ("…" if len(letter_text) > 300 else ""),
     }
